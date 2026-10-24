@@ -5,11 +5,23 @@ type Props = {
   result: ComputeSuccess | null;
   error: string | null;
   onCopy: () => void;
+  onCopyLatex: () => void;
   onFillBack: () => void;
   copied: boolean;
+  copiedLatex: boolean;
+  latexPreview: string | null;
 };
 
-export default function ResultPanel({ result, error, onCopy, onFillBack, copied }: Props) {
+export default function ResultPanel({
+  result,
+  error,
+  onCopy,
+  onCopyLatex,
+  onFillBack,
+  copied,
+  copiedLatex,
+  latexPreview,
+}: Props) {
   return (
     <section className="card">
       <div className="result-head">
@@ -36,12 +48,18 @@ export default function ResultPanel({ result, error, onCopy, onFillBack, copied 
             <button type="button" onClick={onCopy}>
               {copied ? "已复制" : "复制结果"}
             </button>
+            <button type="button" onClick={onCopyLatex}>
+              {copiedLatex ? "已复制 LaTeX" : "复制 LaTeX"}
+            </button>
             {result.kind === "matrix" ? (
               <button type="button" onClick={onFillBack}>
                 将结果填入输入
               </button>
             ) : null}
           </div>
+          {latexPreview ? (
+            <textarea className="latex-preview" readOnly rows={6} value={latexPreview} />
+          ) : null}
           <details className="steps">
             <summary>计算步骤</summary>
             <ol>

@@ -1,9 +1,19 @@
 import { useMemo, useState } from "react";
+import HistoryPanel from "./components/HistoryPanel";
 import MatrixInput from "./components/MatrixInput";
 import ResultPanel from "./components/ResultPanel";
 import { compute } from "./engine/compute";
 import { EXAMPLES } from "./engine/examples";
 import { emptyGrid, identityGrid, MAX_DIM, MIN_DIM, resizeGrid, zeroGrid } from "./engine/grid";
+import {
+  loadHistory,
+  newHistoryId,
+  pushHistory,
+  removeHistory,
+  saveHistory,
+  type HistoryRecord,
+} from "./engine/history";
+import { exportLatex } from "./engine/latex";
 import type { CellError, ComputeSuccess, Mode, Op } from "./engine/types";
 import { OP_LABEL } from "./engine/types";
 
@@ -27,6 +37,16 @@ function clampDim(n: number): number {
   return Math.min(MAX_DIM, Math.max(MIN_DIM, Math.round(n)));
 }
 
+function snapshotB(nextOp: Op, nextB: string[][]): string[][] | undefined {
+  if (nextOp === "solve") {
+    return nextB[0] ? nextB.map((row) => [row[0] ?? ""]) : [["0"]];
+  }
+  if (BINARY.includes(nextOp)) {
+    return nextB;
+  }
+  return undefined;
+}
+
 export default function App() {
   const [mode, setMode] = useState<Mode>("exact");
   const [precision, setPrecision] = useState(4);
@@ -38,28 +58,41 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [cellErrors, setCellErrors] = useState<CellError[]>([]);
   const [copied, setCopied] = useState(false);
+  const [copiedLatex, setCopiedLatex] = useState(false);
+  const [latexPreview, setLatexPreview] = useState<string | null>(null);
+  const [history, setHistory] = useState<HistoryRecord[]>(() => loadHistory());
 
   const needB = BINARY.includes(op) || op === "solve";
 
   const aErrors = useMemo(() => cellErrors.filter((e) => e.grid === "a"), [cellErrors]);
   const bErrors = useMemo(() => cellErrors.filter((e) => e.grid === "b"), [cellErrors]);
 
-  function run(nextMode = mode, nextOp = op, nextA = a, nextB = b, nextScalar = scalar) {
-    const reqB =
-      nextOp === "solve"
-        ? (nextB[0] ? nextB.map((row) => [row[0] ?? ""]) : [["0"]])
-        : BINARY.includes(nextOp)
-          ? nextB
-          : undefined;
+  function persistHistory(list: HistoryRecord[]) {
+    setHistory(list);
+    saveHistory(list);
+  }
+
+  function run(
+    nextMode = mode,
+    nextOp = op,
+    nextA = a,
+    nextB = b,
+    nextScalar = scalar,
+    recordHistory = true,
+    nextPrecision = precision
+  ) {
+    const reqB = snapshotB(nextOp, nextB);
     const res = compute({
       op: nextOp,
       mode: nextMode,
-      precision,
+      precision: nextPrecision,
       a: nextA,
       b: reqB,
       scalar: nextScalar,
     });
     setCopied(false);
+    setCopiedLatex(false);
+    setLatexPreview(null);
     if (!res.ok) {
       setResult(null);
       setError(res.error);
@@ -69,6 +102,20 @@ export default function App() {
     setError(null);
     setCellErrors([]);
     setResult(res);
+    if (recordHistory) {
+      const record: HistoryRecord = {
+        id: newHistoryId(),
+        createdAt: Date.now(),
+        op: nextOp,
+        mode: nextMode,
+        precision: nextPrecision,
+        a: nextA.map((row) => row.slice()),
+        b: reqB?.map((row) => row.slice()),
+        scalar: nextOp === "scalar" ? nextScalar : undefined,
+        display: res.display,
+      };
+      persistHistory(pushHistory(history, record));
+    }
   }
 
   function changeA(r: number, c: number, value: string) {
@@ -104,6 +151,7 @@ export default function App() {
     setError(null);
     setCellErrors([]);
     setResult(null);
+    setLatexPreview(null);
   }
 
   async function copyResult() {
@@ -118,11 +166,42 @@ export default function App() {
     }
   }
 
+  async function copyLatex() {
+    if (!result) {
+      return;
+    }
+    const text = exportLatex(result);
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopiedLatex(true);
+      setLatexPreview(null);
+    } catch {
+      setLatexPreview(text);
+      setError("无法写入剪贴板，请手动复制下方 LaTeX。");
+    }
+  }
+
   function fillBack() {
     if (!result?.matrix) {
       return;
     }
     setA(result.matrix.primary.map((row) => row.slice()));
+  }
+
+  function loadRecord(record: HistoryRecord) {
+    setOp(record.op);
+    setMode(record.mode);
+    setPrecision(record.precision);
+    setA(record.a.map((row) => row.slice()));
+    if (record.b) {
+      setB(record.b.map((row) => row.slice()));
+    } else if (record.op === "solve") {
+      setB(emptyGrid(record.a.length, 1));
+    }
+    if (record.scalar) {
+      setScalar(record.scalar);
+    }
+    run(record.mode, record.op, record.a, record.b ?? b, record.scalar ?? scalar, false, record.precision);
   }
 
   return (
@@ -141,7 +220,7 @@ export default function App() {
               onClick={() => {
                 setMode("exact");
                 if (result) {
-                  run("exact");
+                  run("exact", op, a, b, scalar, false);
                 }
               }}
             >
@@ -153,7 +232,7 @@ export default function App() {
               onClick={() => {
                 setMode("float");
                 if (result) {
-                  run("float");
+                  run("float", op, a, b, scalar, false);
                 }
               }}
             >
@@ -240,16 +319,28 @@ export default function App() {
             </div>
           </section>
         </div>
-        <ResultPanel
-          result={result}
-          error={error}
-          onCopy={copyResult}
-          onFillBack={fillBack}
-          copied={copied}
-        />
+        <div>
+          <ResultPanel
+            result={result}
+            error={error}
+            onCopy={copyResult}
+            onCopyLatex={copyLatex}
+            onFillBack={fillBack}
+            copied={copied}
+            copiedLatex={copiedLatex}
+            latexPreview={latexPreview}
+          />
+          <div style={{ height: 12 }} />
+          <HistoryPanel
+            records={history}
+            onLoad={loadRecord}
+            onRemove={(id) => persistHistory(removeHistory(history, id))}
+            onClear={() => persistHistory([])}
+          />
+        </div>
       </div>
       <p className="footer">
-        矩阵规模 1×1 到 10×10。空单元格视为 0。可粘贴空格分隔、MATLAB 或 LaTeX 矩阵。
+        矩阵规模 1×1 到 10×10。空单元格视为 0。可粘贴空格分隔、MATLAB 或 LaTeX 矩阵。历史仅保存在本机浏览器。
       </p>
     </div>
   );
